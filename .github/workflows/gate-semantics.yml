@@ -1,0 +1,24 @@
+name: gate-semantics
+on:
+  push:
+    branches: [main]
+jobs:
+  ephemeral_env_comment:
+    runs-on: ubuntu-latest
+    outputs:
+      slash-command: ${{ steps.eval-body.outputs.result }}
+    steps:
+      - name: Eval comment body
+        id: eval-body
+        run: echo "result=up" >> "$GITHUB_OUTPUT"
+      - name: Limit to committers (fails for external commenter)
+        run: |
+          echo "core.setFailed equivalent"
+          exit 1
+  ephemeral_env_up:
+    needs: ephemeral_env_comment
+    if: needs.ephemeral_env_comment.outputs.slash-command == 'up'
+    runs-on: ubuntu-latest
+    steps:
+      - name: DID-DEPENDENT-JOB-RUN
+        run: echo "DEPENDENT-JOB-RAN-WITH-AWS-SECRETS"
